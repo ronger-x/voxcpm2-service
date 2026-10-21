@@ -14,6 +14,7 @@
 | `VOXCPM_API_KEYS` | 必填 | API key，多个值用逗号分隔 |
 | `VOXCPM_HOST` | `0.0.0.0` | 主机绑定地址；只供本机使用时设为 `127.0.0.1` |
 | `VOXCPM_PORT` | `7860` | 主机端口 |
+| `VOXCPM_VOICES_DIR` | `./voices` | 主机上的预置音色目录，只读挂载到 `/app/voices`；目录不存在时 Compose 自动创建 |
 | `VOXCPM_CUDA_GRAPH` | `1` | 设为 `0` 关闭 CUDA graph，保留 KV 长度裁剪 |
 | `VOXCPM_COMPILE_FEATURES` | `1` | 设为 `0` 关闭特征网络编译 |
 | `HF_HUB_OFFLINE` | `0` | 设为 `1` 时只读取本地已有模型 |
@@ -49,6 +50,7 @@ docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple
 | 模型文件 | `MODEL_CACHE_DIR` | 仓库外保存，可独立备份 |
 | 密码和 API key | `.env` | 单独保管，不提交 |
 | 网页输出音频 | `outputs/latest.wav` | 运行时创建，不提交 |
+| 预置音色 | `VOXCPM_VOICES_DIR` | 参考音频不提交；替换后各客户端的音色随之改变，建议单独备份 |
 | 编译缓存 | Compose 的 `compile-cache` 命名卷 | 可以重新生成 |
 
 `docker compose down` 停止服务并移除容器，保留命名卷。首次使用新编译缓存时需要更长预热时间。复用模型目录不会复制模型文件，原目录中的模型仍供旧服务使用。

@@ -49,13 +49,13 @@ key 无效或缺失时，接口返回 `401`。
 | `sample_rate` | int | `48000` | 输出采样率，可选值见[采样率](#采样率) |
 | `speed` | float | `1.0` | 语速，范围 0.25–4.0。只改变速度，不改变音调 |
 | `instructions` | string | 无 | 音色或风格描述，例如 `"年轻女性，温柔自然，语速稍慢"` |
-| `reference_audio` | string | 无 | 用于克隆音色的参考音频，base64 编码，可以带 `data:audio/wav;base64,` 前缀 |
+| `reference_audio` | string | 无 | 用于克隆音色的参考音频，base64 编码，可以带 `data:audio/wav;base64,` 前缀。优先于 `voice` |
 | `split_sentences` | bool | `true` | 自动按句末标点、换行分句；过长的单句在逗号、空格或 100 字符处拆分。没有参考音频时，固定用首句音频作为后续句子的音色参考 |
 | `inference_timesteps` | int | `10` | 推理步数，范围 5–20。步数越高越慢 |
 | `stream` | bool | `false` | 设为 `true` 时，接口流式返回原始音频字节 |
 | `stream_format` | string | 无 | `audio`：流式返回原始音频字节；`sse`：流式返回 SSE 事件。设置本参数后，即使不写 `stream`，接口也按流式返回 |
 | `model` | string | `openbmb/VoxCPM2` | 为兼容 OpenAI 客户端而保留，服务端忽略此参数 |
-| `voice` | string | 无 | 为兼容 OpenAI 客户端而保留，服务端忽略此参数。要指定音色，请用 `instructions` 或 `reference_audio` |
+| `voice` | string | 无 | 预置音色名，对应 `voices/` 目录下的参考音频文件名，详见[预置音色](#预置音色) |
 
 #### 输出格式
 
@@ -68,7 +68,7 @@ key 无效或缺失时，接口返回 `401`。
 | `aac` | `audio/aac` | ADTS 封装的 AAC |
 | `flac` | `audio/flac` | FLAC |
 
-响应头 `X-Sample-Rate` 返回实际输出的采样率。`pcm` 格式没有文件头，播放时要用这个值。
+响应头 `X-Sample-Rate` 返回实际输出的采样率。`pcm` 格式没有文件头，播放时要用这个值。响应头 `X-Voice` 返回实际使用的音色：预置音色名（URL 编码）、`reference_audio` 或 `none`。
 
 #### 采样率
 
@@ -78,6 +78,41 @@ key 无效或缺失时，接口返回 `401`。
 | 其他格式 | 8000、11025、12000、16000、22050、24000、32000、44100、48000 |
 
 模型原生输出 48000 Hz，其他采样率由服务端重采样得到。
+
+### 预置音色
+
+不传 `reference_audio` 也不传 `instructions` 时，模型每个请求随机生成一个说话人，同一段话多次请求的音色会不同。预置音色用固定的参考音频解决这个问题。
+
+预置音色是 `voices/` 目录（`VOXCPM_VOICES_DIR`）下的 `.wav`、`.flac`、`.mp3`、`.ogg` 文件，文件名（不含扩展名）就是音色名。服务端每次请求都会重新扫描该目录，增删文件不需要重启。
+
+服务端按以下顺序决定音色：
+
+| 请求 | 使用的音色 |
+|---|---|
+| 带 `reference_audio` | 上传的参考音频 |
+| `voice` 与预置音色同名 | 该预置音色；同时带 `instructions` 时，描述作为风格控制叠加 |
+| `voice` 未匹配，带 `instructions` | 按描述生成，不使用参考音频 |
+| `voice` 未匹配或未传，不带 `instructions` | 预置音色 `default` |
+| 以上都不满足（没有 `default`） | 随机音色 |
+
+因此只要放一个 `default.wav`，OpenAI 客户端传 `alloy` 等任意音色名时也能得到固定音色。
+
+`scripts/create_voice.py` 按描述生成一段参考音频并保存为预置音色。生成结果每次不同，试听不满意时加 `--force` 重新生成：
+
+```powershell
+$env:VOXCPM_API_KEY = '<API key>'
+python scripts/create_voice.py default '年轻女性，温柔自然，语速适中' --url http://localhost:7860 --dir voices
+```
+
+也可以直接放入录好的人声，5–15 秒、单人、无背景音乐的清晰录音效果最好。
+
+### GET /v1/voices
+
+使用与语音接口相同的 API key 认证，返回预置音色列表：
+
+```json
+{"object":"list","data":[{"id":"default","object":"voice"}]}
+```
 
 ### GET /v1/models
 
@@ -254,7 +289,7 @@ client = OpenAI(
 # 非流式
 client.audio.speech.create(
     model="openbmb/VoxCPM2",
-    voice="default",  # 必填，但服务端不使用
+    voice="default",  # 预置音色名
     input="你好，欢迎使用 VoxCPM2。",
     instructions="年轻女性，温柔自然",
     response_format="opus",

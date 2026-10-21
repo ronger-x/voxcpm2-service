@@ -33,6 +33,10 @@ logs/
 *.opus
 *.aac
 
+# The default reference voice is checked in for reproducible deployments.
+!voices/
+!voices/*.wav
+
 # Python environments and generated files
 .venv/
 venv/
