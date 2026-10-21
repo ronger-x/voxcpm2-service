@@ -314,9 +314,18 @@ def player():
     return FileResponse(ROOT / 'static' / 'player.html')
 
 
+class SpeechProsody(BaseModel):
+    """合成后对本段做的确定性处理，不依赖模型是否听从风格描述。"""
+    rate: float = Field(1.0, ge=0.5, le=2.0)  # 语速倍数，变速不变调
+    pitch: float = Field(0.0, ge=-12.0, le=12.0)  # 音高，单位半音，保留共振峰
+    volume: float = Field(0.0, ge=-30.0, le=10.0)  # 音量增益，单位 dB
+    pause: float = Field(0.0, ge=0.0, le=3.0)  # 本段开头插入的静音，单位秒
+
+
 class SpeechSegment(BaseModel):
     text: str
     instructions: str | None = None  # 本段的语气 / 风格，叠加在整段的 instructions 之后
+    prosody: SpeechProsody | None = None
 
 
 class SpeechRequest(BaseModel):
@@ -427,7 +436,11 @@ async def speech(
 ):
     check_api_key(authorization, x_api_key)
     segments = [
-        {'text': segment.text.strip(), 'instructions': (segment.instructions or '').strip() or None}
+        {
+            'text': segment.text.strip(),
+            'instructions': (segment.instructions or '').strip() or None,
+            'prosody': (segment.prosody.model_dump(exclude_defaults=True) or None) if segment.prosody else None,
+        }
         for segment in req.segments or [] if segment.text.strip()
     ]
     text = ' '.join(segment['text'] for segment in segments) if segments else req.input.strip()

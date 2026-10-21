@@ -158,6 +158,35 @@ class APITests(unittest.TestCase):
             response = self.client.post('/v1/audio/speech', headers=self.headers, json=body)
             self.assertEqual(response.status_code, 400, body)
 
+    def test_segment_prosody_is_validated_and_forwarded(self):
+        captured = []
+        original = app.generate_segments
+
+        def recording(model, kwargs, streaming, cancelled):
+            captured.append(kwargs.get('segments'))
+            return original(model, kwargs, streaming, cancelled)
+
+        with patch.object(app, 'generate_segments', recording):
+            response = self.client.post('/v1/audio/speech', headers=self.headers, json={
+                'response_format': 'pcm',
+                'segments': [
+                    {'text': '一。', 'prosody': {'volume': -3, 'pause': 0.25}},
+                    {'text': '二。', 'prosody': {}},
+                ],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured[0], [
+            {'text': '一。', 'instructions': None, 'prosody': {'volume': -3.0, 'pause': 0.25}},
+            {'text': '二。', 'instructions': None, 'prosody': None},
+        ])
+        # 0.25 s 静音 + 两句各 3 块
+        self.assertEqual(len(response.content), (12000 + 2 * 3 * 4800) * 2)
+
+        for prosody in ({'rate': 3}, {'pitch': -13}, {'volume': 20}, {'pause': -1}):
+            response = self.client.post('/v1/audio/speech', headers=self.headers,
+                json={'segments': [{'text': '一。', 'prosody': prosody}]})
+            self.assertEqual(response.status_code, 422, prosody)
+
     def test_without_presets_voice_is_ignored(self):
         tts = RecordingTTS()
         with patch.object(app, 'MODEL', SimpleNamespace(tts_model=tts)):

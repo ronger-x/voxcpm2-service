@@ -1,11 +1,15 @@
+import shutil
+import subprocess
 import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import numpy as np
 import torch
 
-from synthesis import generate_segments, plan_sentences, split_sentences
+from synthesis import apply_prosody, generate_segments, plan_sentences, prosody_filter, split_sentences
 
 
 class FakeTTS:
@@ -87,14 +91,66 @@ class SynthesisTests(unittest.TestCase):
             {'text': '你且说说。', 'instructions': ' 轻声，语速放慢 '},
         ])
         self.assertEqual(plan, [
-            ('好一则趣话。', '年轻女性，带着笑意'),
-            ('倒是新颖。', '年轻女性，带着笑意'),
-            ('我偏是不做。', '年轻女性'),
-            ('你且说说。', '年轻女性，轻声，语速放慢'),
+            ('好一则趣话。', '年轻女性，带着笑意', None),
+            ('倒是新颖。', '年轻女性，带着笑意', None),
+            ('我偏是不做。', '年轻女性', None),
+            ('你且说说。', '年轻女性，轻声，语速放慢', None),
         ])
-        self.assertEqual(plan_sentences('一。二。', None, None), [('一。', None), ('二。', None)])
+        self.assertEqual(plan_sentences('一。二。', None, None), [('一。', None, None), ('二。', None, None)])
         self.assertEqual(plan_sentences('', None, [{'text': '一。二。', 'instructions': '平淡'}], split=False),
-                         [('一。二。', '平淡')])
+                         [('一。二。', '平淡', None)])
+
+    def test_segment_prosody_applies_to_each_sentence_and_pauses_once(self):
+        plan = plan_sentences('', None, [
+            {'text': '一。二。', 'prosody': {'rate': 0.8, 'pause': 0.5}},
+            {'text': '三。', 'prosody': {'pause': 0.3}},
+        ])
+        self.assertEqual(plan, [
+            ('一。', None, {'rate': 0.8, 'pause': 0.5}),
+            ('二。', None, {'rate': 0.8}),
+            ('三。', None, {'pause': 0.3}),
+        ])
+        self.assertIsNone(prosody_filter({'volume': -6, 'pause': 0.5}))
+        self.assertEqual(prosody_filter({'rate': 0.8, 'pitch': 12}),
+                         'rubberband=tempo=0.8:pitch=2.000000:formant=preserved:pitchq=quality')
+
+    def test_prosody_reshapes_whole_sentences_and_inserts_pauses(self):
+        tts = FakeTTS()
+        calls = []
+
+        def fake_apply(pcm, rate, prosody):
+            calls.append((len(pcm), rate, prosody))
+            return np.ones(len(pcm) // 2, dtype=np.float32)
+
+        with patch('synthesis.apply_prosody', fake_apply):
+            result = list(generate_segments(SimpleNamespace(tts_model=tts), {
+                'text': '',
+                'segments': [
+                    {'text': '一。', 'prosody': {'rate': 1.25, 'pause': 0.5}},
+                    {'text': '二。', 'prosody': {'volume': -6.0206}},
+                    {'text': '三。'},
+                ],
+            }, True, threading.Event()))
+        # 变速 / 变调的句子攒成整句后处理一次；只调音量的句子仍按块流式输出
+        self.assertEqual(calls, [(160, 48000, {'rate': 1.25, 'pause': 0.5})])
+        self.assertEqual([len(chunk) for chunk in result], [24000, 80, 80, 80, 80, 80])
+        self.assertTrue(np.all(result[0] == 0))
+        self.assertTrue(np.allclose(result[1], 1.0))
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg 不可用')
+    def test_apply_prosody_changes_duration_and_pitch(self):
+        rate = 48000
+        tone = (0.5 * np.sin(2 * np.pi * 220 * np.arange(rate) / rate)).astype(np.float32)
+        try:
+            shifted = apply_prosody(tone, rate, {'rate': 0.8, 'pitch': 2})
+        except subprocess.CalledProcessError as error:
+            if b'rubberband' in error.stderr or b'No such filter' in error.stderr:
+                self.skipTest('ffmpeg 未编译 rubberband')
+            raise
+        self.assertAlmostEqual(len(shifted) / rate, 1.25, delta=0.05)
+        spectrum = np.abs(np.fft.rfft(shifted * np.hanning(len(shifted))))
+        peak = np.fft.rfftfreq(len(shifted), 1 / rate)[spectrum.argmax()]
+        self.assertAlmostEqual(peak, 220 * 2 ** (2 / 12), delta=5)
 
     def test_segment_styles_use_one_reference_and_drop_transcript_cloning(self):
         tts = FakeTTS()

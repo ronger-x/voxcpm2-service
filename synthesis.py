@@ -1,6 +1,7 @@
 """Sentence segmentation and a fixed voice reference for each request."""
 
 import re
+import subprocess
 import tempfile
 from contextlib import closing
 from pathlib import Path
@@ -41,16 +42,48 @@ def merge_controls(*controls):
 
 
 def plan_sentences(text, control=None, segments=None, split=True):
-    """Return [(sentence, control)]. Each segment may add its own style to the request-wide control."""
+    """Return [(sentence, control, prosody)].
+
+    Each segment may add its own style to the request-wide control and carry a prosody;
+    only the segment's first sentence keeps the leading pause.
+    """
     pieces = segments if segments else [{'text': text}]
     plan = []
     for piece in pieces:
         piece_control = merge_controls(control, piece.get('instructions'))
         piece_text = piece['text'].strip()
-        for sentence in (split_sentences(piece_text) if split else [piece_text]):
-            if sentence:
-                plan.append((sentence, piece_control))
+        sentences = [s for s in (split_sentences(piece_text) if split else [piece_text]) if s]
+        for index, sentence in enumerate(sentences):
+            prosody = dict(piece.get('prosody') or {})
+            if index:
+                prosody.pop('pause', None)
+            plan.append((sentence, piece_control, prosody or None))
     return plan
+
+
+def prosody_filter(prosody):
+    """ffmpeg rubberband filter for rate (tempo factor) and pitch (semitones); formants are kept
+    so the cloned timbre survives the shift. None when neither changes."""
+    rate = prosody.get('rate', 1.0)
+    pitch = prosody.get('pitch', 0.0)
+    if rate == 1 and pitch == 0:
+        return None
+    return f'rubberband=tempo={rate:g}:pitch={2 ** (pitch / 12):.6f}:formant=preserved:pitchq=quality'
+
+
+def apply_gain(pcm, prosody):
+    gain = (prosody or {}).get('volume', 0.0)
+    return np.clip(pcm * 10 ** (gain / 20), -1.0, 1.0).astype(np.float32) if gain else pcm
+
+
+def apply_prosody(pcm, sample_rate, prosody):
+    """Reshape one whole sentence: rubberband needs the full sentence, so it cannot stream."""
+    result = subprocess.run(
+        ['ffmpeg', '-v', 'error', '-nostdin', '-f', 'f32le', '-ar', str(sample_rate), '-ac', '1',
+         '-i', 'pipe:0', '-af', prosody_filter(prosody), '-f', 'f32le', 'pipe:1'],
+        input=pcm.astype('<f4').tobytes(), capture_output=True, check=True,
+    )
+    return apply_gain(np.frombuffer(result.stdout, '<f4').copy(), prosody)
 
 
 def build_reference_cache(tts, reference, prompt_text=None):
@@ -80,13 +113,17 @@ def generate_segments(model, kwargs, streaming, cancelled):
     if cancelled.is_set():
         return
     prompt_cache = build_reference_cache(tts, reference, reference_text) if reference else None
-    for index, (sentence, control) in enumerate(plan):
+    for index, (sentence, control, prosody) in enumerate(plan):
         if cancelled.is_set():
             return
         sentence = re.sub(r'\s+', ' ', sentence)
         prompt = f'({control}){sentence}' if control else sentence
         first_chunks = []
+        held = [] if prosody and prosody_filter(prosody) else None
         needs_anchor = index == 0 and prompt_cache is None and len(plan) > 1
+        pause = (prosody or {}).get('pause', 0)
+        if pause:
+            yield np.zeros(int(pause * tts.sample_rate), dtype=np.float32)
         with closing(tts._generate_with_prompt_cache(
             target_text=prompt,
             prompt_cache=prompt_cache,
@@ -100,7 +137,12 @@ def generate_segments(model, kwargs, streaming, cancelled):
                 pcm = wav.squeeze(0).cpu().numpy().copy()
                 if needs_anchor:
                     first_chunks.append(pcm)
-                yield pcm
+                if held is None:
+                    yield apply_gain(pcm, prosody)
+                else:
+                    held.append(pcm)
+        if held and not cancelled.is_set():
+            yield apply_prosody(np.concatenate(held), tts.sample_rate, prosody)
         if needs_anchor and not cancelled.is_set():
             # Keep this reference fixed; using the previous sentence accumulates
             # voice drift. The uploaded reference, when present, takes priority.
