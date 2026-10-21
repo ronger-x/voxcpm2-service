@@ -27,11 +27,16 @@ class RecordingTTS(FakeTTS):
     def __init__(self):
         self.references = []
         self.transcripts = []
+        self.prompts = []
 
     def build_prompt_cache(self, reference_wav_path, prompt_text=None, prompt_wav_path=None):
         self.references.append(reference_wav_path)
         self.transcripts.append(prompt_text)
         return super().build_prompt_cache(reference_wav_path)
+
+    def _generate_with_prompt_cache(self, **kwargs):
+        self.prompts.append(kwargs['target_text'])
+        return super()._generate_with_prompt_cache(**kwargs)
 
 
 class APITests(unittest.TestCase):
@@ -127,6 +132,31 @@ class APITests(unittest.TestCase):
         # .txt 不是音色，不应出现在列表里
         listed = self.client.get('/v1/voices', headers=self.headers).json()
         self.assertEqual([voice['id'] for voice in listed['data']], ['default', 'plain'])
+
+    def test_segments_apply_their_style_and_keep_the_preset_voice(self):
+        Path(self.voices_dir.name, 'default.wav').write_bytes(b'RIFF')
+        Path(self.voices_dir.name, 'default.txt').write_text('参考文本。', encoding='utf-8')
+        tts = RecordingTTS()
+        with patch.object(app, 'MODEL', SimpleNamespace(tts_model=tts)):
+            response = self.client.post('/v1/audio/speech', headers=self.headers, json={
+                'voice': 'alloy',
+                'response_format': 'pcm',
+                'segments': [
+                    {'text': '好一则趣话。', 'instructions': '带着笑意'},
+                    {'text': '   '},
+                    {'text': '你且说说。', 'instructions': '轻声'},
+                ],
+            })
+        self.assertEqual(response.status_code, 200)
+        # 段落风格不参与音色选择：仍用 default 预置音色，但改为只按参考音频克隆
+        self.assertEqual(response.headers['X-Voice'], 'default')
+        self.assertEqual(tts.transcripts, [None])
+        self.assertEqual(tts.prompts, ['(带着笑意)好一则趣话。', '(轻声)你且说说。'])
+        self.assertEqual(len(response.content), 2 * 3 * 4800 * 2)
+
+        for body in ({'segments': [{'text': ' ', 'instructions': '轻声'}]}, {'segments': []}, {}):
+            response = self.client.post('/v1/audio/speech', headers=self.headers, json=body)
+            self.assertEqual(response.status_code, 400, body)
 
     def test_without_presets_voice_is_ignored(self):
         tts = RecordingTTS()

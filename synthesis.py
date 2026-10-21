@@ -34,6 +34,25 @@ def split_sentences(text, max_chars=100):
     return sentences
 
 
+def merge_controls(*controls):
+    """Join the request-wide description with a segment's style into one parenthesised prefix."""
+    parts = [control.strip() for control in controls if control and control.strip()]
+    return '，'.join(parts) or None
+
+
+def plan_sentences(text, control=None, segments=None, split=True):
+    """Return [(sentence, control)]. Each segment may add its own style to the request-wide control."""
+    pieces = segments if segments else [{'text': text}]
+    plan = []
+    for piece in pieces:
+        piece_control = merge_controls(control, piece.get('instructions'))
+        piece_text = piece['text'].strip()
+        for sentence in (split_sentences(piece_text) if split else [piece_text]):
+            if sentence:
+                plan.append((sentence, piece_control))
+    return plan
+
+
 def build_reference_cache(tts, reference, prompt_text=None):
     """With the transcript, also continue from the same clip (upstream "ultimate cloning"),
     which upstream recommends for the closest timbre; without it, clone from audio alone."""
@@ -47,23 +66,29 @@ def build_reference_cache(tts, reference, prompt_text=None):
 def generate_segments(model, kwargs, streaming, cancelled):
     """Yield native PCM. Encode an uploaded/first-sentence reference only once."""
     options = dict(kwargs)
-    text = options.pop('text')
-    control = options.pop('control', None)
-    split = options.pop('split_sentences', True)
+    plan = plan_sentences(
+        options.pop('text'),
+        options.pop('control', None),
+        options.pop('segments', None),
+        options.pop('split_sentences', True),
+    )
     reference = options.pop('reference_wav_path', None)
     reference_text = options.pop('reference_text', None)
-    sentences = split_sentences(text) if split else [text]
+    # Upstream ignores the parenthesised control in transcript ("Hi-Fi") cloning, so any
+    # control switches the whole request to reference-only cloning, which honours it.
+    if any(control for _, control in plan):
+        reference_text = None
     tts = model.tts_model
     if cancelled.is_set():
         return
     prompt_cache = build_reference_cache(tts, reference, reference_text) if reference else None
-    for index, sentence in enumerate(sentences):
+    for index, (sentence, control) in enumerate(plan):
         if cancelled.is_set():
             return
         sentence = re.sub(r'\s+', ' ', sentence)
-        prompt = f'({control.strip()}){sentence}' if control and control.strip() else sentence
+        prompt = f'({control}){sentence}' if control else sentence
         first_chunks = []
-        needs_anchor = index == 0 and prompt_cache is None and len(sentences) > 1
+        needs_anchor = index == 0 and prompt_cache is None and len(plan) > 1
         with closing(tts._generate_with_prompt_cache(
             target_text=prompt,
             prompt_cache=prompt_cache,
