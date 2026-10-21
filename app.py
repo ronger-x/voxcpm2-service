@@ -159,7 +159,9 @@ async def run_on_gpu(kwargs, streaming, cleanup_reference=None):
         cancelled.set()
 
 
-def build_kwargs(text, control=None, reference_audio=None, inference_timesteps=10, split_sentences=True):
+def build_kwargs(
+    text, control=None, reference_audio=None, inference_timesteps=10, split_sentences=True, reference_text=None
+):
     kwargs = {
         'text': text,
         'control': control,
@@ -170,6 +172,8 @@ def build_kwargs(text, control=None, reference_audio=None, inference_timesteps=1
     }
     if reference_audio:
         kwargs['reference_wav_path'] = reference_audio
+        if reference_text and reference_text.strip():
+            kwargs['reference_text'] = reference_text.strip()
     return kwargs
 
 
@@ -319,6 +323,7 @@ class SpeechRequest(BaseModel):
     stream_format: Literal['audio', 'sse'] | None = None  # 同 OpenAI；设置后即为流式
     inference_timesteps: int = Field(10, ge=5, le=20)
     reference_audio: str | None = None  # base64 编码的参考音频，可带 data: URL 前缀
+    reference_text: str | None = None  # reference_audio 的逐字文本；提供后音色还原更稳定
     split_sentences: bool = True  # 分句合成，固定参考音色
 
 
@@ -364,18 +369,26 @@ def preset_voices():
     }
 
 
+def preset_transcript(audio_path):
+    """预置音色同名的 .txt 是参考音频的逐字文本；缺失或为空时只按参考音频克隆。"""
+    path = Path(audio_path).with_suffix('.txt')
+    try:
+        return path.read_text(encoding='utf-8').strip() or None
+    except FileNotFoundError:
+        return None
+
+
 def resolve_voice(name, instructions=None):
-    """返回 (音色名, 参考音频路径)。
+    """返回 (音色名, 参考音频路径, 参考文本)。
 
     voice 匹配预置文件时使用该音色。未匹配时：有 instructions 则按描述设计音色（不用参考）；
-    否则回落到 default 预置音色。都没有时返回 (None, None)，此时每个请求的音色是随机的。
+    否则回落到 default 预置音色。都没有时返回 (None, None, None)，此时每个请求的音色是随机的。
     """
     voices = preset_voices()
-    if name in voices:
-        return name, str(voices[name])
-    if not (instructions and instructions.strip()) and DEFAULT_VOICE in voices:
-        return DEFAULT_VOICE, str(voices[DEFAULT_VOICE])
-    return None, None
+    for candidate in (name, None if instructions and instructions.strip() else DEFAULT_VOICE):
+        if candidate in voices:
+            return candidate, str(voices[candidate]), preset_transcript(voices[candidate])
+    return None, None, None
 
 
 @api.get('/health')
@@ -411,13 +424,14 @@ async def speech(
     streaming = req.stream or req.stream_format is not None
     # 上传的参考音频优先于预置音色；只有上传的临时文件需要在生成后删除
     if req.reference_audio:
-        voice_name, voice_path = 'reference_audio', None
+        voice_name, voice_path, reference_text = 'reference_audio', None, req.reference_text
         reference_path = save_reference_audio(req.reference_audio)
     else:
-        voice_name, voice_path = resolve_voice(req.voice, req.instructions)
+        voice_name, voice_path, reference_text = resolve_voice(req.voice, req.instructions)
         reference_path = None
     kwargs = build_kwargs(
-        text, req.instructions, reference_path or voice_path, req.inference_timesteps, req.split_sentences
+        text, req.instructions, reference_path or voice_path, req.inference_timesteps, req.split_sentences,
+        reference_text,
     )
     results = run_on_gpu(kwargs, streaming, cleanup_reference=reference_path)
     try:

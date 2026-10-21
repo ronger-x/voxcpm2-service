@@ -34,6 +34,16 @@ def split_sentences(text, max_chars=100):
     return sentences
 
 
+def build_reference_cache(tts, reference, prompt_text=None):
+    """With the transcript, also continue from the same clip (upstream "ultimate cloning"),
+    which upstream recommends for the closest timbre; without it, clone from audio alone."""
+    if prompt_text and prompt_text.strip():
+        return tts.build_prompt_cache(
+            prompt_text=prompt_text.strip(), prompt_wav_path=reference, reference_wav_path=reference
+        )
+    return tts.build_prompt_cache(reference_wav_path=reference)
+
+
 def generate_segments(model, kwargs, streaming, cancelled):
     """Yield native PCM. Encode an uploaded/first-sentence reference only once."""
     options = dict(kwargs)
@@ -41,11 +51,12 @@ def generate_segments(model, kwargs, streaming, cancelled):
     control = options.pop('control', None)
     split = options.pop('split_sentences', True)
     reference = options.pop('reference_wav_path', None)
+    reference_text = options.pop('reference_text', None)
     sentences = split_sentences(text) if split else [text]
     tts = model.tts_model
     if cancelled.is_set():
         return
-    prompt_cache = tts.build_prompt_cache(reference_wav_path=reference) if reference else None
+    prompt_cache = build_reference_cache(tts, reference, reference_text) if reference else None
     for index, sentence in enumerate(sentences):
         if cancelled.is_set():
             return
