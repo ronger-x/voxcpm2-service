@@ -41,4 +41,6 @@ if __name__ == '__main__':
     audio = design(args.url, os.environ.get('VOXCPM_API_KEY', ''), args.instructions, args.text, args.steps)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(audio)
+    # 同名 .txt 记录参考文本，服务端据此改用续写式克隆
+    target.with_suffix('.txt').write_text(args.text.strip() + '\n', encoding='utf-8')
     print(f'已保存 {target}（{len(audio) / 1024:.0f} KiB），试听满意后即可在请求中使用 voice={args.name!r}')

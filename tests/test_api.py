@@ -15,7 +15,7 @@ import app
 class FakeTTS:
     sample_rate = 48000
 
-    def build_prompt_cache(self, reference_wav_path):
+    def build_prompt_cache(self, reference_wav_path, prompt_text=None, prompt_wav_path=None):
         return {'ref': str(reference_wav_path)}
 
     def _generate_with_prompt_cache(self, **kwargs):
@@ -26,9 +26,11 @@ class FakeTTS:
 class RecordingTTS(FakeTTS):
     def __init__(self):
         self.references = []
+        self.transcripts = []
 
-    def build_prompt_cache(self, reference_wav_path):
+    def build_prompt_cache(self, reference_wav_path, prompt_text=None, prompt_wav_path=None):
         self.references.append(reference_wav_path)
+        self.transcripts.append(prompt_text)
         return super().build_prompt_cache(reference_wav_path)
 
 
@@ -104,6 +106,27 @@ class APITests(unittest.TestCase):
             self.assertFalse(Path(tts.references[0]).exists())
         # 预置文件只读使用，生成后不能被当作临时参考删除
         self.assertTrue(all(Path(preset(name)).exists() for name in ('default', 'alice', '小美')))
+
+    def test_preset_transcript_and_uploaded_reference_text_are_used(self):
+        Path(self.voices_dir.name, 'default.wav').write_bytes(b'RIFF')
+        Path(self.voices_dir.name, 'default.txt').write_text(' 参考文本。\n', encoding='utf-8')
+        Path(self.voices_dir.name, 'plain.wav').write_bytes(b'RIFF')
+        tts = RecordingTTS()
+        with patch.object(app, 'MODEL', SimpleNamespace(tts_model=tts)):
+            for body, transcript in [
+                ({'voice': 'default'}, '参考文本。'),
+                ({'voice': 'plain'}, None),
+                ({'reference_audio': 'UklGRg==', 'reference_text': '上传的文本'}, '上传的文本'),
+                ({'reference_audio': 'UklGRg=='}, None),
+            ]:
+                tts.transcripts.clear()
+                response = self.client.post('/v1/audio/speech', headers=self.headers,
+                    json={'input': '你好。', 'response_format': 'pcm', **body})
+                self.assertEqual(response.status_code, 200, body)
+                self.assertEqual(tts.transcripts, [transcript], body)
+        # .txt 不是音色，不应出现在列表里
+        listed = self.client.get('/v1/voices', headers=self.headers).json()
+        self.assertEqual([voice['id'] for voice in listed['data']], ['default', 'plain'])
 
     def test_without_presets_voice_is_ignored(self):
         tts = RecordingTTS()

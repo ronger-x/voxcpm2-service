@@ -15,11 +15,11 @@ class FakeTTS:
         self.calls, self.references = [], []
         self.closed = 0
 
-    def build_prompt_cache(self, reference_wav_path):
+    def build_prompt_cache(self, reference_wav_path, prompt_text=None, prompt_wav_path=None):
         self.references.append(reference_wav_path)
         if 'anchor' in reference_wav_path:
             assert Path(reference_wav_path).is_file()
-        return {'reference': reference_wav_path}
+        return {'reference': reference_wav_path, 'prompt_text': prompt_text, 'prompt_wav': prompt_wav_path}
 
     def _generate_with_prompt_cache(self, **kwargs):
         self.calls.append(kwargs)
@@ -63,6 +63,22 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual(tts.references, ['uploaded.wav'])
         self.assertTrue(all(call['prompt_cache'] is tts.calls[0]['prompt_cache'] for call in tts.calls))
         self.assertTrue(tts.calls[0]['retry_badcase'])
+
+    def test_reference_transcript_enables_continuation_cloning(self):
+        tts = FakeTTS()
+        list(generate_segments(SimpleNamespace(tts_model=tts),
+             {'text': '一。二。', 'reference_wav_path': 'voice.wav', 'reference_text': ' 参考文本。 '},
+             True, threading.Event()))
+        cache = tts.calls[0]['prompt_cache']
+        self.assertEqual(cache, {'reference': 'voice.wav', 'prompt_text': '参考文本。', 'prompt_wav': 'voice.wav'})
+        self.assertTrue(all(call['prompt_cache'] is cache for call in tts.calls))
+        self.assertNotIn('reference_text', tts.calls[0])
+
+        tts = FakeTTS()
+        list(generate_segments(SimpleNamespace(tts_model=tts),
+             {'text': '一。', 'reference_wav_path': 'voice.wav', 'reference_text': '  '}, True, threading.Event()))
+        self.assertIsNone(tts.calls[0]['prompt_cache']['prompt_text'])
+        self.assertIsNone(tts.calls[0]['prompt_cache']['prompt_wav'])
 
     def test_cancel_closes_active_generator_without_starting_next_sentence(self):
         tts, cancelled = FakeTTS(), threading.Event()
