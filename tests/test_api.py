@@ -23,10 +23,22 @@ class FakeTTS:
             yield torch.full((1, 4800), 0.125), None, None
 
 
+class RecordingTTS(FakeTTS):
+    def __init__(self):
+        self.references = []
+
+    def build_prompt_cache(self, reference_wav_path):
+        self.references.append(reference_wav_path)
+        return super().build_prompt_cache(reference_wav_path)
+
+
 class APITests(unittest.TestCase):
     def setUp(self):
+        self.voices_dir = tempfile.TemporaryDirectory()
+        self.voices = patch.object(app, 'VOICES_DIR', Path(self.voices_dir.name))
         self.keys = patch.object(app, 'API_KEYS', ['test-key'])
         self.model = patch.object(app, 'MODEL', SimpleNamespace(tts_model=FakeTTS()))
+        self.voices.start()
         self.keys.start()
         self.model.start()
         self.client = TestClient(app.api)
@@ -37,6 +49,8 @@ class APITests(unittest.TestCase):
         self.client.close()
         self.keys.stop()
         self.model.stop()
+        self.voices.stop()
+        self.voices_dir.cleanup()
 
     def test_models_requires_auth_and_has_openai_shape(self):
         self.assertEqual(self.client.get('/v1/models').status_code, 401)
@@ -52,6 +66,53 @@ class APITests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers['X-Sample-Rate'], '48000')
             self.assertEqual(len(response.content), 2 * 3 * 4800 * 2)
+
+    def test_preset_voices_are_listed_and_selected_by_voice(self):
+        for name in ('default', 'alice', '小美'):
+            Path(self.voices_dir.name, f'{name}.wav').write_bytes(b'RIFF')
+        Path(self.voices_dir.name, 'notes.txt').write_text('ignored')
+        self.assertEqual(self.client.get('/v1/voices').status_code, 401)
+        listed = self.client.get('/v1/voices', headers=self.headers).json()
+        self.assertEqual([voice['id'] for voice in listed['data']], ['alice', 'default', '小美'])
+
+        tts = RecordingTTS()
+        preset = lambda name: str(Path(self.voices_dir.name, f'{name}.wav'))
+        cases = [
+            ({'voice': 'alice'}, 'alice', preset('alice')),
+            ({'voice': '小美'}, '%E5%B0%8F%E7%BE%8E', preset('小美')),
+            ({'voice': 'nova'}, 'default', preset('default')),
+            ({}, 'default', preset('default')),
+            # 未知音色加 instructions：按描述设计音色，不套 default 参考
+            ({'voice': 'nova', 'instructions': '温柔'}, 'none', None),
+            ({'voice': 'alice', 'instructions': '温柔'}, 'alice', preset('alice')),
+        ]
+        with patch.object(app, 'MODEL', SimpleNamespace(tts_model=tts)):
+            for body, header, reference in cases:
+                tts.references.clear()
+                response = self.client.post('/v1/audio/speech', headers=self.headers,
+                    json={'input': '你好。', 'response_format': 'pcm', **body})
+                self.assertEqual(response.status_code, 200, body)
+                self.assertEqual(response.headers['X-Voice'], header, body)
+                self.assertEqual(tts.references, [reference] if reference else [], body)
+
+            tts.references.clear()
+            response = self.client.post('/v1/audio/speech', headers=self.headers,
+                json={'input': '你好。', 'voice': 'alice', 'reference_audio': 'UklGRg==', 'response_format': 'pcm'})
+            self.assertEqual(response.headers['X-Voice'], 'reference_audio')
+            self.assertNotEqual(tts.references, [preset('alice')])
+            app.JOBS.join()
+            self.assertFalse(Path(tts.references[0]).exists())
+        # 预置文件只读使用，生成后不能被当作临时参考删除
+        self.assertTrue(all(Path(preset(name)).exists() for name in ('default', 'alice', '小美')))
+
+    def test_without_presets_voice_is_ignored(self):
+        tts = RecordingTTS()
+        with patch.object(app, 'MODEL', SimpleNamespace(tts_model=tts)):
+            response = self.client.post('/v1/audio/speech', headers=self.headers,
+                json={'input': '你好。', 'voice': 'default', 'response_format': 'pcm'})
+        self.assertEqual(response.headers['X-Voice'], 'none')
+        self.assertEqual(tts.references, [])
+        self.assertEqual(self.client.get('/v1/voices', headers=self.headers).json()['data'], [])
 
     def test_sse_finishes_and_player_assets_load(self):
         response = self.client.post('/v1/audio/speech', headers=self.headers,

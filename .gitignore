@@ -22,6 +22,7 @@ compile-cache/
 
 # Runtime output and audio
 outputs/
+voices/
 logs/
 *.log
 *.pid

@@ -1,6 +1,6 @@
 # VoxCPM2 Service
 
-VoxCPM2 本地语音合成服务，提供 OpenAI 兼容 API、Gradio 音色测试页和连续 PCM 播放器。服务支持中文语音、音色描述、参考音频克隆、自动分句和固定参考音色。
+VoxCPM2 本地语音合成服务，提供 OpenAI 兼容 API、Gradio 音色测试页和连续 PCM 播放器。服务支持中文语音、音色描述、参考音频克隆、预置音色、自动分句和固定参考音色。
 
 工程使用 Git 管理。模型权重、Hugging Face 缓存、虚拟环境、真实凭据和生成音频不纳入版本控制；Docker 从仓库外挂载模型缓存。
 
@@ -38,6 +38,7 @@ docker compose logs -f
 | `http://localhost:7860/player` | 填写 API key 后分句生成、连续播放和下载 WAV |
 | `POST /v1/audio/speech` | 流式或完整音频 API |
 | `GET /v1/models` | 需要 API key 的模型列表 |
+| `GET /v1/voices` | 需要 API key 的预置音色列表 |
 | `GET /health` | 无需认证的健康检查 |
 
 首次语音请求包含加载、编译和预热。后续请求复用模型及 CUDA graph。健康检查通过表示 HTTP 服务可用，不代表模型已经预热。
@@ -50,8 +51,9 @@ voxcpm2-service/
 ├── inference_accel.py         # KV 裁剪与 CUDA graph
 ├── synthesis.py               # 分句、音色参考和取消生成
 ├── static/                    # PCM 环形缓冲播放器
+├── voices/                    # 预置音色参考音频（运行时挂载，不提交）
 ├── tests/                     # Python 与 JavaScript 测试
-├── scripts/benchmark_stream.py
+├── scripts/                   # 性能测量、生成预置音色
 ├── docs/                      # API、部署和迁移记录
 ├── requirements.txt           # 已验证的直接运行依赖
 ├── requirements-dev.txt       # 测试依赖

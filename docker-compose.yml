@@ -20,6 +20,7 @@ services:
         bind:
           create_host_path: false
       - ./outputs:/app/outputs
+      - ${VOXCPM_VOICES_DIR:-./voices}:/app/voices:ro
       - compile-cache:/cache
     deploy:
       resources:

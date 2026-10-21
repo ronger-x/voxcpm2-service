@@ -12,6 +12,7 @@ import threading
 from contextlib import aclosing, closing
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 import gradio as gr
 import numpy as np
@@ -31,6 +32,10 @@ ROOT = Path(__file__).resolve().parent
 CACHE_DIR = Path(os.environ.get('HF_HOME', str(Path.home() / '.cache' / 'huggingface'))).expanduser()
 OUTPUT_DIR = Path(os.environ.get('VOXCPM_OUTPUT_DIR', str(ROOT / 'outputs'))).expanduser()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# 预置音色：目录下的 <名称>.wav 等参考音频，请求的 voice 按文件名匹配
+VOICES_DIR = Path(os.environ.get('VOXCPM_VOICES_DIR', str(ROOT / 'voices'))).expanduser()
+VOICE_EXTENSIONS = ('.wav', '.flac', '.mp3', '.ogg')
+DEFAULT_VOICE = 'default'
 os.environ.setdefault('HF_HOME', str(CACHE_DIR))
 
 MODEL = None
@@ -305,7 +310,7 @@ def player():
 class SpeechRequest(BaseModel):
     input: str
     model: str = 'openbmb/VoxCPM2'
-    voice: str | None = None  # 仅为兼容 OpenAI 客户端，不使用
+    voice: str | None = None  # 预置音色名；未知或未填时使用 default 预置音色
     instructions: str | None = None  # 音色 / 风格描述
     response_format: Literal['wav', 'pcm', 'mp3', 'opus', 'aac', 'flac'] = 'wav'
     sample_rate: int | None = None  # 输出采样率，默认用模型原生的 48000
@@ -349,6 +354,30 @@ def save_reference_audio(data):
     return f.name
 
 
+def preset_voices():
+    """音色名 -> 参考音频路径。每次请求重新扫描，增删文件不需要重启服务。"""
+    if not VOICES_DIR.is_dir():
+        return {}
+    return {
+        path.stem: path for path in sorted(VOICES_DIR.iterdir())
+        if path.is_file() and path.suffix.lower() in VOICE_EXTENSIONS
+    }
+
+
+def resolve_voice(name, instructions=None):
+    """返回 (音色名, 参考音频路径)。
+
+    voice 匹配预置文件时使用该音色。未匹配时：有 instructions 则按描述设计音色（不用参考）；
+    否则回落到 default 预置音色。都没有时返回 (None, None)，此时每个请求的音色是随机的。
+    """
+    voices = preset_voices()
+    if name in voices:
+        return name, str(voices[name])
+    if not (instructions and instructions.strip()) and DEFAULT_VOICE in voices:
+        return DEFAULT_VOICE, str(voices[DEFAULT_VOICE])
+    return None, None
+
+
 @api.get('/health')
 def health():
     return {'status': 'ok'}
@@ -360,6 +389,12 @@ def models(authorization: str | None = Header(None), x_api_key: str | None = Hea
     return {'object': 'list', 'data': [
         {'id': 'openbmb/VoxCPM2', 'object': 'model', 'created': 0, 'owned_by': 'openbmb'},
     ]}
+
+
+@api.get('/v1/voices')
+def voices(authorization: str | None = Header(None), x_api_key: str | None = Header(None)):
+    check_api_key(authorization, x_api_key)
+    return {'object': 'list', 'data': [{'id': name, 'object': 'voice'} for name in preset_voices()]}
 
 
 @api.post('/v1/audio/speech')
@@ -374,8 +409,16 @@ async def speech(
         raise HTTPException(400, 'input 不能为空')
     check_sample_rate(req.sample_rate, req.response_format)
     streaming = req.stream or req.stream_format is not None
-    reference_path = save_reference_audio(req.reference_audio) if req.reference_audio else None
-    kwargs = build_kwargs(text, req.instructions, reference_path, req.inference_timesteps, req.split_sentences)
+    # 上传的参考音频优先于预置音色；只有上传的临时文件需要在生成后删除
+    if req.reference_audio:
+        voice_name, voice_path = 'reference_audio', None
+        reference_path = save_reference_audio(req.reference_audio)
+    else:
+        voice_name, voice_path = resolve_voice(req.voice, req.instructions)
+        reference_path = None
+    kwargs = build_kwargs(
+        text, req.instructions, reference_path or voice_path, req.inference_timesteps, req.split_sentences
+    )
     results = run_on_gpu(kwargs, streaming, cleanup_reference=reference_path)
     try:
         # 等到第一段音频再发响应头，生成失败时还能返回正常的错误状态码
@@ -386,7 +429,8 @@ async def speech(
     sample_rate = req.sample_rate or model_rate
     command = ffmpeg_command(model_rate, req.response_format, sample_rate, req.speed)
     media_type = AUDIO_FORMATS[req.response_format][1]
-    headers = {'X-Sample-Rate': str(sample_rate)}
+    # 响应头只能是 latin-1，中文音色名按 URL 编码
+    headers = {'X-Sample-Rate': str(sample_rate), 'X-Voice': quote(voice_name or 'none')}
     if not streaming:
         await results.aclose()
         data = await asyncio.to_thread(encode_audio, first, command)
