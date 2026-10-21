@@ -160,7 +160,8 @@ async def run_on_gpu(kwargs, streaming, cleanup_reference=None):
 
 
 def build_kwargs(
-    text, control=None, reference_audio=None, inference_timesteps=10, split_sentences=True, reference_text=None
+    text, control=None, reference_audio=None, inference_timesteps=10, split_sentences=True, reference_text=None,
+    segments=None,
 ):
     kwargs = {
         'text': text,
@@ -170,6 +171,8 @@ def build_kwargs(
         'inference_timesteps': int(inference_timesteps),
         'max_len': 4096,
     }
+    if segments:
+        kwargs['segments'] = segments
     if reference_audio:
         kwargs['reference_wav_path'] = reference_audio
         if reference_text and reference_text.strip():
@@ -311,8 +314,14 @@ def player():
     return FileResponse(ROOT / 'static' / 'player.html')
 
 
+class SpeechSegment(BaseModel):
+    text: str
+    instructions: str | None = None  # 本段的语气 / 风格，叠加在整段的 instructions 之后
+
+
 class SpeechRequest(BaseModel):
-    input: str
+    input: str = ''  # 传了 segments 时以 segments 为准，input 可以留空
+    segments: list[SpeechSegment] | None = None  # 分段文本，每段可带自己的风格
     model: str = 'openbmb/VoxCPM2'
     voice: str | None = None  # 预置音色名；未知或未填时使用 default 预置音色
     instructions: str | None = None  # 音色 / 风格描述
@@ -417,7 +426,11 @@ async def speech(
     x_api_key: str | None = Header(None),
 ):
     check_api_key(authorization, x_api_key)
-    text = req.input.strip()
+    segments = [
+        {'text': segment.text.strip(), 'instructions': (segment.instructions or '').strip() or None}
+        for segment in req.segments or [] if segment.text.strip()
+    ]
+    text = ' '.join(segment['text'] for segment in segments) if segments else req.input.strip()
     if not text:
         raise HTTPException(400, 'input 不能为空')
     check_sample_rate(req.sample_rate, req.response_format)
@@ -429,9 +442,10 @@ async def speech(
     else:
         voice_name, voice_path, reference_text = resolve_voice(req.voice, req.instructions)
         reference_path = None
+    # 段落风格只影响语气，不参与音色选择：音色仍按 voice 与整段 instructions 决定
     kwargs = build_kwargs(
         text, req.instructions, reference_path or voice_path, req.inference_timesteps, req.split_sentences,
-        reference_text,
+        reference_text, segments,
     )
     results = run_on_gpu(kwargs, streaming, cleanup_reference=reference_path)
     try:

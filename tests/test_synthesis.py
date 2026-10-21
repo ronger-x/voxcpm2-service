@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from synthesis import generate_segments, split_sentences
+from synthesis import generate_segments, plan_sentences, split_sentences
 
 
 class FakeTTS:
@@ -79,6 +79,45 @@ class SynthesisTests(unittest.TestCase):
              {'text': '一。', 'reference_wav_path': 'voice.wav', 'reference_text': '  '}, True, threading.Event()))
         self.assertIsNone(tts.calls[0]['prompt_cache']['prompt_text'])
         self.assertIsNone(tts.calls[0]['prompt_cache']['prompt_wav'])
+
+    def test_segments_carry_their_own_style_on_top_of_request_control(self):
+        plan = plan_sentences('', '年轻女性', [
+            {'text': '好一则趣话。倒是新颖。', 'instructions': '带着笑意'},
+            {'text': ' 我偏是不做。 '},
+            {'text': '你且说说。', 'instructions': ' 轻声，语速放慢 '},
+        ])
+        self.assertEqual(plan, [
+            ('好一则趣话。', '年轻女性，带着笑意'),
+            ('倒是新颖。', '年轻女性，带着笑意'),
+            ('我偏是不做。', '年轻女性'),
+            ('你且说说。', '年轻女性，轻声，语速放慢'),
+        ])
+        self.assertEqual(plan_sentences('一。二。', None, None), [('一。', None), ('二。', None)])
+        self.assertEqual(plan_sentences('', None, [{'text': '一。二。', 'instructions': '平淡'}], split=False),
+                         [('一。二。', '平淡')])
+
+    def test_segment_styles_use_one_reference_and_drop_transcript_cloning(self):
+        tts = FakeTTS()
+        list(generate_segments(SimpleNamespace(tts_model=tts), {
+            'text': '',
+            'segments': [{'text': '好一则趣话。', 'instructions': '带着笑意'}, {'text': '我偏是不做。'}],
+            'reference_wav_path': 'voice.wav',
+            'reference_text': '参考文本。',
+        }, True, threading.Event()))
+        # 上游在续写式克隆下忽略括号指令，带风格时只按参考音频克隆
+        self.assertEqual(tts.references, ['voice.wav'])
+        self.assertIsNone(tts.calls[0]['prompt_cache']['prompt_text'])
+        self.assertEqual([call['target_text'] for call in tts.calls], ['(带着笑意)好一则趣话。', '我偏是不做。'])
+        self.assertTrue(all(call['prompt_cache'] is tts.calls[0]['prompt_cache'] for call in tts.calls))
+
+        # 没有分段语气时保持原行为：只有整段描述也继续用续写式克隆
+        for options in ({'text': '', 'segments': [{'text': '一。'}, {'text': '二。'}]},
+                        {'text': '一。', 'control': '温柔'}):
+            tts = FakeTTS()
+            list(generate_segments(SimpleNamespace(tts_model=tts), {
+                **options, 'reference_wav_path': 'voice.wav', 'reference_text': '参考文本。',
+            }, True, threading.Event()))
+            self.assertEqual(tts.calls[0]['prompt_cache']['prompt_text'], '参考文本。', options)
 
     def test_cancel_closes_active_generator_without_starting_next_sentence(self):
         tts, cancelled = FakeTTS(), threading.Event()
