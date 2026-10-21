@@ -45,7 +45,7 @@ key 无效或缺失时，接口返回 `401`。
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `input` | string | 必填 | 要合成的文本，不能为空。传了 `segments` 时可以省略 |
-| `segments` | array | 无 | 分段文本，每段可带自己的语气，详见[分段语气](#分段语气)。优先于 `input` |
+| `segments` | array | 无 | 分段文本，每段可带非语言标签、语速 / 音高 / 音量 / 停顿，详见[分段语气](#分段语气)。优先于 `input` |
 | `response_format` | string | `wav` | 输出格式：`wav`、`pcm`、`mp3`、`opus`、`aac`、`flac`，详见[输出格式](#输出格式) |
 | `sample_rate` | int | `48000` | 输出采样率，可选值见[采样率](#采样率) |
 | `speed` | float | `1.0` | 语速，范围 0.25–4.0。只改变速度，不改变音调 |
@@ -114,7 +114,7 @@ python scripts/create_voice.py default '年轻女性，温柔自然，语速适�
 
 ### 分段语气
 
-`instructions` 对整个请求生效。一段回复里语气有变化时，例如角色先笑着说、再淡淡地说、最后轻声说，用 `segments` 把文本分段，每段在 `instructions` 字段写本段的语气：
+一段回复里语气有变化时（例如角色先笑着说、再淡淡地说、最后轻声说），用 `segments` 把文本分段，每段可以带三样东西：
 
 ```json
 {
@@ -122,25 +122,36 @@ python scripts/create_voice.py default '年轻女性，温柔自然，语速适�
   "response_format": "pcm",
   "stream_format": "audio",
   "segments": [
-    {"text": "好、好一则趣话。这断舍离的法子，倒是新颖得紧。", "instructions": "带着笑意，略显意外"},
-    {"text": "我这一向，偏是不做这断舍离的人。", "instructions": "笑意收住，语气平淡克制"},
-    {"text": "你且说说，你眼前有那样该舍的东西么？", "instructions": "轻声，语速放慢"}
+    {"text": "[laughing]好、好一则趣话。这断舍离的法子，倒是新颖得紧。", "prosody": {"pitch": 1, "pause": 0.4}},
+    {"text": "我这一向，偏是不做这断舍离的人。", "prosody": {"rate": 0.92, "pitch": -2}},
+    {"text": "你且说说，你眼前有那样该舍的东西么？", "prosody": {"rate": 0.85, "volume": -6, "pause": 0.3}}
   ]
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
-| `segments[].text` | 本段要朗读的文本。空白段落会被跳过；全部为空时返回 `400` |
-| `segments[].instructions` | 本段的语气或风格，可省略。请求顶层也有 `instructions` 时，两者用逗号拼接成一条描述，顶层在前 |
+| `segments[].text` | 本段要朗读的文本，可以带上游的非语言标签（见下文）。空白段落会被跳过；全部为空时返回 `400` |
+| `segments[].prosody.rate` | 语速倍数，0.5–2，变速不变调 |
+| `segments[].prosody.pitch` | 音高，−12 到 12 个半音，保留共振峰，音色不变 |
+| `segments[].prosody.volume` | 音量增益，−30 到 10 dB |
+| `segments[].prosody.pause` | 本段开头插入的静音，0–3 秒 |
+| `segments[].instructions` | 本段的风格描述，与顶层 `instructions` 用逗号拼接后作为括号控制前缀。效果很弱，见下文 |
+
+**哪些手段听得出来**（用预置音色 `default` 实测，SenseVoice 听写与情绪识别、基频与响度测量）：
+
+| 手段 | 效果 |
+|---|---|
+| 非语言标签 `[laughing]`、`[sigh]`、`[Dissatisfaction-hnn]` 等 | 稳定发出笑声、叹气、"哼"，SenseVoice 情绪判为 HAPPY / SAD。上游建议少用，一段一个；`[Surprise-wa]` 等会念成"哇"，但情绪变化不明显 |
+| `prosody` | 确定性处理，必定生效。实测"轻声慢"（rate 0.82、pitch −2、volume −7）把语速从 5.8 降到 4.8 字/秒、基频从 238 降到 205 Hz、响度降 7.8 dB |
+| `instructions` 风格描述 | 克隆音色下几乎无效。"非常小声的耳语，语速非常慢"只让语速变化不到 10%、基频变化不到 10 Hz；调高 cfg 也没有帮助。只有不用参考音色（按描述设计声音）时才明显 |
 
 规则：
 
-- 段内照常按 `split_sentences` 分句，每一句都带上本段的描述。
-- 音色只由 `voice`、`reference_audio` 和顶层 `instructions` 决定，段落的描述不影响音色选择。全部段落共用同一个参考音色，在一个请求里生成，所以中途不会换声音。
-- 只要有一段带描述，整个请求就不再使用参考文本（预置音色的 `.txt` 或 `reference_text`），改为只按参考音频克隆。上游说明，续写式克隆会忽略括号里的控制描述，只有只按参考音频克隆时描述才生效。音色还原会比续写式克隆略弱。
-- 描述要写声音听起来怎样（语气、情绪、语速、音量），不要写动作。例如“掩口轻笑”应写成“带着笑意”，“低头，声音渐轻”应写成“轻声，语速放慢”。上游没有笑声、叹气等非语言标签，描述只能影响整句的语气。
-- 上游说明控制效果每次生成会有差异。
+- 段内照常按 `split_sentences` 分句。`rate`、`pitch`、`volume` 作用于本段每一句，`pause` 只加在本段第一句前。
+- 带 `rate` 或 `pitch` 的句子要整句生成完才能变速变调，流式时这些句子整句发出，首段延迟会变长；只调 `volume` 的句子仍按块流式输出。
+- 音色只由 `voice`、`reference_audio` 和顶层 `instructions` 决定，段落设置不影响音色选择。全部段落在同一个请求里共用一个参考音色，中途不会换声音。
+- 只要有一段带 `instructions`，整个请求就不再使用参考文本，改为只按参考音频克隆（上游说明续写式克隆会忽略括号描述）。只用标签和 `prosody` 时仍按续写式克隆，音色最稳定。
 
 ### GET /v1/voices
 
