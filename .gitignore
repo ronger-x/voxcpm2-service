@@ -1,0 +1,58 @@
+# Local credentials and machine-specific settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Models, datasets and Hugging Face / compiler caches
+hf-cache/
+models/
+checkpoints/
+data/
+.cache/
+compile-cache/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+*.gguf
+
+# Runtime output and audio
+outputs/
+logs/
+*.log
+*.pid
+*.wav
+*.pcm
+*.mp3
+*.flac
+*.ogg
+*.opus
+*.aac
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Local experiments, browser captures and editor state
+.tmp*/
+.playwright-cli/
+output/
+node_modules/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+vllm-omni/

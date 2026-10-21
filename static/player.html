@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VoxCPM2 · 连续播放</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+    body { max-width: 780px; margin: 40px auto; padding: 0 20px; }
+    h1 { margin-bottom: 6px; font-size: 1.7rem; }
+    .intro { margin-top: 0; opacity: .75; }
+    label { display: block; margin: 18px 0 6px; font-weight: 550; }
+    input, textarea, button { font: inherit; box-sizing: border-box; }
+    input:not([type=checkbox]), textarea { width: 100%; padding: 10px; border: 1px solid #8887; border-radius: 8px; background: transparent; color: inherit; }
+    textarea { min-height: 150px; resize: vertical; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 180px; }
+    .actions { display: flex; gap: 12px; align-items: center; margin-top: 22px; }
+    button { padding: 10px 22px; border: 1px solid #8887; border-radius: 8px; cursor: pointer; }
+    button[type=submit] { background: #365acb; color: white; border-color: #365acb; }
+    button:disabled { opacity: .5; cursor: default; }
+    a { color: #6485ed; }
+    #status { padding: 14px; background: #8881; border-radius: 8px; }
+    small { opacity: .7; }
+    :focus-visible { outline: 3px solid #6485ed; outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <h1>VoxCPM2 · 连续播放</h1>
+  <p class="intro">长文本自动分句，保持参考音色。缓冲后边生成边播放。</p>
+  <form id="speech-form">
+    <label for="api-key">API key</label>
+    <input id="api-key" type="password" autocomplete="off" placeholder="填写服务的 API key">
+    <small>仅用于本次页面会话，刷新后清除。</small>
+    <label for="text">合成文本</label>
+    <textarea id="text" required>今天天气不错，我们一起去公园散步吧。路上可以看到很多花，空气也特别清新。走累了就在湖边坐一会儿，看看水里的鱼。</textarea>
+    <label for="instructions">音色 / 风格描述（可选）</label>
+    <input id="instructions" placeholder="例如：年轻女性，温柔自然，语速稍慢">
+    <div class="row">
+      <div><label for="reference">参考音频（可选）</label><input id="reference" type="file" accept="audio/*"></div>
+      <div><label for="steps">推理步数</label><input id="steps" type="number" min="5" max="20" value="10" required></div>
+    </div>
+    <label><input id="split" type="checkbox" checked> 自动分句并保持音色</label>
+    <div class="actions">
+      <button id="play" type="submit">生成并播放</button>
+      <button id="stop" type="button" disabled>停止</button>
+      <a id="download" hidden download="voxcpm.wav">下载 WAV</a>
+    </div>
+  </form>
+  <p id="status" role="status" aria-live="polite">准备就绪</p>
+  <p><a href="/">返回语音测试页</a></p>
+  <script type="module" src="/player-assets/player.js"></script>
+</body>
+</html>

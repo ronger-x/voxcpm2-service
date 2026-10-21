@@ -1,0 +1,7 @@
+*
+!requirements.txt
+!app.py
+!inference_accel.py
+!synthesis.py
+!static/
+!static/**

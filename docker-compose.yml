@@ -1,0 +1,40 @@
+name: voxcpm2-service
+
+services:
+  voxcpm2:
+    build: .
+    image: voxcpm2-service:local
+    ports:
+      - "${VOXCPM_HOST:-0.0.0.0}:${VOXCPM_PORT:-7860}:7860"
+    environment:
+      VOXCPM_USER: ${VOXCPM_USER:-admin}
+      VOXCPM_PASSWORD: ${VOXCPM_PASSWORD:?在 .env 中设置 VOXCPM_PASSWORD}
+      VOXCPM_API_KEYS: ${VOXCPM_API_KEYS:?在 .env 中设置 VOXCPM_API_KEYS，多个用逗号分隔}
+      VOXCPM_CUDA_GRAPH: ${VOXCPM_CUDA_GRAPH:-1}
+      VOXCPM_COMPILE_FEATURES: ${VOXCPM_COMPILE_FEATURES:-1}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    volumes:
+      - type: bind
+        source: ${MODEL_CACHE_DIR:?在 .env 中设置仓库外的 MODEL_CACHE_DIR}
+        target: /data/hf-cache
+        bind:
+          create_host_path: false
+      - ./outputs:/app/outputs
+      - compile-cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  compile-cache:

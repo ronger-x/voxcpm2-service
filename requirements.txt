@@ -1,0 +1,13 @@
+# Direct dependencies verified in the CUDA 12.8 / Python 3.11 container.
+# The CUDA base image supplies torch and torchaudio; these pins prevent upgrades.
+torch==2.9.1
+torchaudio==2.9.1
+torchcodec==0.8.1
+voxcpm==2.0.3
+transformers==5.20.2
+gradio==6.30.0
+fastapi==0.150.0
+uvicorn==0.54.0
+numpy==2.3.4
+soundfile==0.14.0
+pydantic==2.14.1
