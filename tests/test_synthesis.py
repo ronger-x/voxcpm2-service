@@ -110,14 +110,14 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual([call['target_text'] for call in tts.calls], ['(带着笑意)好一则趣话。', '我偏是不做。'])
         self.assertTrue(all(call['prompt_cache'] is tts.calls[0]['prompt_cache'] for call in tts.calls))
 
-        tts = FakeTTS()
-        list(generate_segments(SimpleNamespace(tts_model=tts), {
-            'text': '',
-            'segments': [{'text': '一。'}, {'text': '二。'}],
-            'reference_wav_path': 'voice.wav',
-            'reference_text': '参考文本。',
-        }, True, threading.Event()))
-        self.assertEqual(tts.calls[0]['prompt_cache']['prompt_text'], '参考文本。')
+        # 没有分段语气时保持原行为：只有整段描述也继续用续写式克隆
+        for options in ({'text': '', 'segments': [{'text': '一。'}, {'text': '二。'}]},
+                        {'text': '一。', 'control': '温柔'}):
+            tts = FakeTTS()
+            list(generate_segments(SimpleNamespace(tts_model=tts), {
+                **options, 'reference_wav_path': 'voice.wav', 'reference_text': '参考文本。',
+            }, True, threading.Event()))
+            self.assertEqual(tts.calls[0]['prompt_cache']['prompt_text'], '参考文本。', options)
 
     def test_cancel_closes_active_generator_without_starting_next_sentence(self):
         tts, cancelled = FakeTTS(), threading.Event()

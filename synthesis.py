@@ -66,17 +66,15 @@ def build_reference_cache(tts, reference, prompt_text=None):
 def generate_segments(model, kwargs, streaming, cancelled):
     """Yield native PCM. Encode an uploaded/first-sentence reference only once."""
     options = dict(kwargs)
+    segments = options.pop('segments', None)
     plan = plan_sentences(
-        options.pop('text'),
-        options.pop('control', None),
-        options.pop('segments', None),
-        options.pop('split_sentences', True),
+        options.pop('text'), options.pop('control', None), segments, options.pop('split_sentences', True)
     )
     reference = options.pop('reference_wav_path', None)
     reference_text = options.pop('reference_text', None)
-    # Upstream ignores the parenthesised control in transcript ("Hi-Fi") cloning, so any
-    # control switches the whole request to reference-only cloning, which honours it.
-    if any(control for _, control in plan):
+    # Upstream ignores the parenthesised control in transcript ("Hi-Fi") cloning, so segment
+    # styles switch the whole request to reference-only cloning, which honours them.
+    if any(segment.get('instructions') for segment in segments or []):
         reference_text = None
     tts = model.tts_model
     if cancelled.is_set():
