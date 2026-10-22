@@ -136,6 +136,7 @@ python scripts/create_voice.py default '年轻女性，温柔自然，语速适�
 | `segments[].prosody.pitch` | 音高，−12 到 12 个半音，保留共振峰。会改变听感上的音色，见下文 |
 | `segments[].prosody.volume` | 音量增益，−30 到 10 dB |
 | `segments[].prosody.pause` | 本段开头插入的静音，0–3 秒 |
+| `segments[].prosody.fade` | 本段从头到尾逐渐改变的音量，−30 到 12 dB，负数为渐弱。按字数分摊到各句，整段是一条连续的斜坡，例如"声音渐低，几不可闻"可用 −15 |
 | `segments[].instructions` | 本段的风格描述，与顶层 `instructions` 用逗号拼接后作为括号控制前缀。效果很弱，见下文 |
 
 **哪些手段听得出来**（用预置音色 `default` 实测，SenseVoice 听写与情绪识别、基频与响度测量）：
@@ -149,7 +150,7 @@ python scripts/create_voice.py default '年轻女性，温柔自然，语速适�
 规则：
 
 - 段内照常按 `split_sentences` 分句。`rate`、`pitch`、`volume` 作用于本段每一句，`pause` 只加在本段第一句前。
-- 带 `rate` 或 `pitch` 的句子要整句生成完才能变速变调，流式时这些句子整句发出，首段延迟会变长；只调 `volume` 的句子仍按块流式输出。
+- 带 `rate`、`pitch` 或 `fade` 的句子要整句生成完才能处理，流式时这些句子整句发出，首段延迟会变长；只调 `volume` 的句子仍按块流式输出。
 - 变速对音色的影响取决于实现：同一段原始音频放慢到 0.85 倍，`rubberband` 让声音发亮（频谱重心 +80–120 Hz，声纹相似度 0.97），`atempo` 为 0.985；放慢到 0.92 倍并降 3 dB 时为 0.99。单独调 `volume` 不影响声纹。建议语速保持在 0.9–1.1 倍。
 - 慎用 `pitch`：保留共振峰也会改变听感上的音色。同一句用 `default` 音色、比较 ECAPA 说话人向量与原样的相似度：重复生成 0.98，`rate` 0.85–0.92 为 0.95–0.96，`volume` −6 为 0.98，`pitch` −1 为 0.96，`pitch` −2 掉到 0.86，试听像换了一个人。相邻段落的音高差不宜超过 1 个半音。
 - 音色只由 `voice`、`reference_audio` 和顶层 `instructions` 决定，段落设置不影响音色选择。全部段落在同一个请求里共用一个参考音色，中途不会换声音。

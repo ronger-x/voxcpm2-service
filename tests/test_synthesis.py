@@ -111,6 +111,11 @@ class SynthesisTests(unittest.TestCase):
             ('三。', None, {'pause': 0.3}),
         ])
         self.assertIsNone(prosody_filter({'volume': -6, 'pause': 0.5}))
+        # 渐弱按字数分摊到各句（3/10 与 7/10）：各句仍单独生成，整段连起来是一条连续的斜坡
+        self.assertEqual(plan_sentences('', None, [{'text': '一二。三四五六七八。', 'prosody': {'fade': -15}}]), [
+            ('一二。', None, {'ramp': (0.0, -4.5)}),
+            ('三四五六七八。', None, {'ramp': (-4.5, -15.0)}),
+        ])
         # 只变速用 atempo，音色变化最小；变调才用 rubberband
         self.assertEqual(prosody_filter({'rate': 0.9}), 'atempo=0.9')
         self.assertEqual(prosody_filter({'rate': 0.8, 'pitch': 12}),
@@ -138,6 +143,27 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual([len(chunk) for chunk in result], [24000, 80, 80, 80, 80, 80])
         self.assertTrue(np.all(result[0] == 0))
         self.assertTrue(np.allclose(result[1], 1.0))
+
+    def test_fade_ramps_gain_across_the_sentence(self):
+        tone = np.full(48000, 0.5, dtype=np.float32)
+        faded = apply_prosody(tone, 48000, {'ramp': (0.0, -20.0), 'volume': -6.0206})
+        self.assertAlmostEqual(faded[0], 0.25, delta=0.001)
+        self.assertAlmostEqual(faded[-1], 0.025, delta=0.001)
+        self.assertTrue(np.all(np.diff(faded) <= 0))
+
+        class ToneTTS(FakeTTS):
+            def _generate_with_prompt_cache(self, **kwargs):
+                for _ in range(2):
+                    yield torch.full((1, 80), 0.5), None, None
+
+        result = list(generate_segments(SimpleNamespace(tts_model=ToneTTS()), {
+            'text': '', 'segments': [{'text': '一。', 'prosody': {'fade': -12}}, {'text': '二。'}],
+        }, True, threading.Event()))
+        # 渐弱的句子整句发出，其余句子仍按块流式
+        self.assertEqual([len(chunk) for chunk in result], [160, 80, 80])
+        self.assertAlmostEqual(result[0][0], 0.5, delta=0.001)
+        self.assertAlmostEqual(result[0][-1], 0.5 * 10 ** (-12 / 20), delta=0.001)
+        self.assertTrue(np.allclose(result[1], 0.5))
 
     @unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg 不可用')
     def test_apply_prosody_rate_keeps_pitch(self):

@@ -320,6 +320,7 @@ class SpeechProsody(BaseModel):
     pitch: float = Field(0.0, ge=-12.0, le=12.0)  # 音高，单位半音，保留共振峰
     volume: float = Field(0.0, ge=-30.0, le=10.0)  # 音量增益，单位 dB
     pause: float = Field(0.0, ge=0.0, le=3.0)  # 本段开头插入的静音，单位秒
+    fade: float = Field(0.0, ge=-30.0, le=12.0)  # 本段从头到尾逐渐改变的音量，单位 dB；负数为渐弱
 
 
 class SpeechSegment(BaseModel):

@@ -45,7 +45,9 @@ def plan_sentences(text, control=None, segments=None, split=True):
     """Return [(sentence, control, prosody)].
 
     Each segment may add its own style to the request-wide control and carry a prosody;
-    only the segment's first sentence keeps the leading pause.
+    only the segment's first sentence keeps the leading pause. A segment `fade` (dB across the
+    whole segment) becomes a per-sentence `ramp` (start dB, end dB) split by character count,
+    so sentences still stream one by one.
     """
     pieces = segments if segments else [{'text': text}]
     plan = []
@@ -53,10 +55,17 @@ def plan_sentences(text, control=None, segments=None, split=True):
         piece_control = merge_controls(control, piece.get('instructions'))
         piece_text = piece['text'].strip()
         sentences = [s for s in (split_sentences(piece_text) if split else [piece_text]) if s]
+        fade = (piece.get('prosody') or {}).get('fade', 0)
+        total = sum(len(sentence) for sentence in sentences) or 1
+        done = 0
         for index, sentence in enumerate(sentences):
             prosody = dict(piece.get('prosody') or {})
+            prosody.pop('fade', None)
             if index:
                 prosody.pop('pause', None)
+            if fade:
+                prosody['ramp'] = (round(fade * done / total, 3), round(fade * (done + len(sentence)) / total, 3))
+            done += len(sentence)
             plan.append((sentence, piece_control, prosody or None))
     return plan
 
@@ -77,19 +86,33 @@ def prosody_filter(prosody):
     return None
 
 
+def needs_whole_sentence(prosody):
+    """Tempo/pitch filters and gain ramps need the whole sentence before any of it is released."""
+    return bool(prosody and (prosody_filter(prosody) or prosody.get('ramp')))
+
+
 def apply_gain(pcm, prosody):
-    gain = (prosody or {}).get('volume', 0.0)
-    return np.clip(pcm * 10 ** (gain / 20), -1.0, 1.0).astype(np.float32) if gain else pcm
+    """Constant `volume` plus an optional linear-in-dB `ramp` across the given audio."""
+    prosody = prosody or {}
+    gain = prosody.get('volume', 0.0)
+    start, end = prosody.get('ramp') or (0.0, 0.0)
+    if not gain and not start and not end:
+        return pcm
+    db = gain + np.linspace(start, end, len(pcm), dtype=np.float32) if (start or end) else gain
+    return np.clip(pcm * 10 ** (db / 20), -1.0, 1.0).astype(np.float32)
 
 
 def apply_prosody(pcm, sample_rate, prosody):
-    """Reshape one whole sentence: rubberband needs the full sentence, so it cannot stream."""
-    result = subprocess.run(
-        ['ffmpeg', '-v', 'error', '-nostdin', '-f', 'f32le', '-ar', str(sample_rate), '-ac', '1',
-         '-i', 'pipe:0', '-af', prosody_filter(prosody), '-f', 'f32le', 'pipe:1'],
-        input=pcm.astype('<f4').tobytes(), capture_output=True, check=True,
-    )
-    return apply_gain(np.frombuffer(result.stdout, '<f4').copy(), prosody)
+    """Reshape one whole sentence: tempo, pitch and the gain ramp."""
+    af = prosody_filter(prosody)
+    if af:
+        result = subprocess.run(
+            ['ffmpeg', '-v', 'error', '-nostdin', '-f', 'f32le', '-ar', str(sample_rate), '-ac', '1',
+             '-i', 'pipe:0', '-af', af, '-f', 'f32le', 'pipe:1'],
+            input=pcm.astype('<f4').tobytes(), capture_output=True, check=True,
+        )
+        pcm = np.frombuffer(result.stdout, '<f4').copy()
+    return apply_gain(pcm, prosody)
 
 
 def build_reference_cache(tts, reference, prompt_text=None):
@@ -125,7 +148,7 @@ def generate_segments(model, kwargs, streaming, cancelled):
         sentence = re.sub(r'\s+', ' ', sentence)
         prompt = f'({control}){sentence}' if control else sentence
         first_chunks = []
-        held = [] if prosody and prosody_filter(prosody) else None
+        held = [] if needs_whole_sentence(prosody) else None
         needs_anchor = index == 0 and prompt_cache is None and len(plan) > 1
         pause = (prosody or {}).get('pause', 0)
         if pause:
