@@ -10,6 +10,8 @@ services:
       VOXCPM_USER: ${VOXCPM_USER:-admin}
       VOXCPM_PASSWORD: ${VOXCPM_PASSWORD:?在 .env 中设置 VOXCPM_PASSWORD}
       VOXCPM_API_KEYS: ${VOXCPM_API_KEYS:?在 .env 中设置 VOXCPM_API_KEYS，多个用逗号分隔}
+      VOXCPM_ENGINE: ${VOXCPM_ENGINE:-nano}
+      VOXCPM_GPU_MEMORY_UTILIZATION: ${VOXCPM_GPU_MEMORY_UTILIZATION:-0.55}
       VOXCPM_CUDA_GRAPH: ${VOXCPM_CUDA_GRAPH:-1}
       VOXCPM_COMPILE_FEATURES: ${VOXCPM_COMPILE_FEATURES:-1}
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
@@ -33,8 +35,9 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/health')"]
       interval: 30s
       timeout: 10s
-      start_period: 60s
+      start_period: 300s
       retries: 3
+    shm_size: 2gb
     restart: unless-stopped
 
 volumes:

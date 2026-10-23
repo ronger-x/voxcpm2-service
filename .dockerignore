@@ -3,5 +3,8 @@
 !app.py
 !inference_accel.py
 !synthesis.py
+!nano_engine.py
+!wheels/
+!wheels/*.whl
 !static/
 !static/**

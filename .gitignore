@@ -37,6 +37,10 @@ logs/
 !voices/
 !voices/*.wav
 
+# Locally downloaded wheels for offline image builds
+wheels/*
+!wheels/.gitkeep
+
 # Python environments and generated files
 .venv/
 venv/

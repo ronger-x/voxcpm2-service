@@ -48,7 +48,8 @@ docker compose logs -f
 ```text
 voxcpm2-service/
 ├── app.py                     # HTTP API、Gradio 和串行 GPU 队列
-├── inference_accel.py         # KV 裁剪与 CUDA graph
+├── inference_accel.py         # torch 引擎：KV 裁剪与 CUDA graph
+├── nano_engine.py             # nano 引擎：Nano-vLLM 适配
 ├── synthesis.py               # 分句、音色参考和取消生成
 ├── static/                    # PCM 环形缓冲播放器
 ├── voices/                    # 预置音色参考音频（运行时挂载，不提交）

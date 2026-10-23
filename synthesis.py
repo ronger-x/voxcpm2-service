@@ -125,6 +125,47 @@ def build_reference_cache(tts, reference, prompt_text=None):
     return tts.build_prompt_cache(reference_wav_path=reference)
 
 
+class TorchBackend:
+    """The upstream `voxcpm` PyTorch path (`VOXCPM_ENGINE=torch`)."""
+
+    def __init__(self, tts, options, streaming):
+        self.tts, self.options, self.streaming = tts, options, streaming
+        self.sample_rate = tts.sample_rate
+
+    def voice(self, path, prompt_text=None):
+        return build_reference_cache(self.tts, path, prompt_text)
+
+    def generate(self, text, voice, cancelled):
+        with closing(self.tts._generate_with_prompt_cache(
+            target_text=text,
+            prompt_cache=voice,
+            streaming=self.streaming,
+            retry_badcase=not self.streaming,
+            **self.options,
+        )) as chunks:
+            for wav, _, _ in chunks:
+                if cancelled.is_set():
+                    return
+                yield wav.squeeze(0).cpu().numpy().copy()
+
+
+class NanoBackend:
+    """`nano_engine.NanoEngine`; diffusion steps and CFG are fixed when the engine starts."""
+
+    def __init__(self, engine, options, streaming):
+        self.engine, self.streaming = engine, streaming
+        self.cfg_value = options.get('cfg_value', 2.0)
+        self.max_len = options.get('max_len', 2000)
+        self.sample_rate = engine.sample_rate
+
+    def voice(self, path, prompt_text=None):
+        return self.engine.voice(path, prompt_text)
+
+    def generate(self, text, voice, cancelled):
+        return self.engine.generate(text, voice, cancelled, streaming=self.streaming,
+                                    cfg_value=self.cfg_value, max_len=self.max_len)
+
+
 def generate_segments(model, kwargs, streaming, cancelled):
     """Yield native PCM. Encode an uploaded/first-sentence reference only once."""
     options = dict(kwargs)
@@ -138,10 +179,11 @@ def generate_segments(model, kwargs, streaming, cancelled):
     # styles switch the whole request to reference-only cloning, which honours them.
     if any(segment.get('instructions') for segment in segments or []):
         reference_text = None
-    tts = model.tts_model
+    backend = (TorchBackend(model.tts_model, options, streaming) if hasattr(model, 'tts_model')
+               else NanoBackend(model, options, streaming))
     if cancelled.is_set():
         return
-    prompt_cache = build_reference_cache(tts, reference, reference_text) if reference else None
+    voice = backend.voice(reference, reference_text) if reference else None
     for index, (sentence, control, prosody) in enumerate(plan):
         if cancelled.is_set():
             return
@@ -149,21 +191,14 @@ def generate_segments(model, kwargs, streaming, cancelled):
         prompt = f'({control}){sentence}' if control else sentence
         first_chunks = []
         held = [] if needs_whole_sentence(prosody) else None
-        needs_anchor = index == 0 and prompt_cache is None and len(plan) > 1
+        needs_anchor = index == 0 and voice is None and len(plan) > 1
         pause = (prosody or {}).get('pause', 0)
         if pause:
-            yield np.zeros(int(pause * tts.sample_rate), dtype=np.float32)
-        with closing(tts._generate_with_prompt_cache(
-            target_text=prompt,
-            prompt_cache=prompt_cache,
-            streaming=streaming,
-            retry_badcase=not streaming,
-            **options,
-        )) as chunks:
-            for wav, _, _ in chunks:
+            yield np.zeros(int(pause * backend.sample_rate), dtype=np.float32)
+        with closing(backend.generate(prompt, voice, cancelled)) as chunks:
+            for pcm in chunks:
                 if cancelled.is_set():
                     return
-                pcm = wav.squeeze(0).cpu().numpy().copy()
                 if needs_anchor:
                     first_chunks.append(pcm)
                 if held is None:
@@ -171,11 +206,11 @@ def generate_segments(model, kwargs, streaming, cancelled):
                 else:
                     held.append(pcm)
         if held and not cancelled.is_set():
-            yield apply_prosody(np.concatenate(held), tts.sample_rate, prosody)
-        if needs_anchor and not cancelled.is_set():
+            yield apply_prosody(np.concatenate(held), backend.sample_rate, prosody)
+        if needs_anchor and first_chunks and not cancelled.is_set():
             # Keep this reference fixed; using the previous sentence accumulates
             # voice drift. The uploaded reference, when present, takes priority.
             with tempfile.TemporaryDirectory(prefix='voxcpm-anchor-') as directory:
                 path = Path(directory) / 'anchor.wav'
-                sf.write(path, np.concatenate(first_chunks), tts.sample_rate)
-                prompt_cache = tts.build_prompt_cache(reference_wav_path=str(path))
+                sf.write(path, np.concatenate(first_chunks), backend.sample_rate)
+                voice = backend.voice(str(path))
