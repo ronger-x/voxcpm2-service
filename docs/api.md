@@ -53,7 +53,7 @@ key 无效或缺失时，接口返回 `401`。
 | `reference_audio` | string | 无 | 用于克隆音色的参考音频，base64 编码，可以带 `data:audio/wav;base64,` 前缀。优先于 `voice` |
 | `reference_text` | string | 无 | `reference_audio` 的逐字文本。提供后改用续写式克隆，音色还原更稳定；文本必须与音频内容一致 |
 | `split_sentences` | bool | `true` | 自动按句末标点、换行分句；过长的单句在逗号、空格或 100 字符处拆分。没有参考音频时，固定用首句音频作为后续句子的音色参考 |
-| `inference_timesteps` | int | `10` | 推理步数，范围 5–20。步数越高越慢 |
+| `inference_timesteps` | int | `10` | 推理步数，范围 5–20。步数越高越慢。默认的 `nano` 引擎在启动时固定步数，忽略此参数 |
 | `stream` | bool | `false` | 设为 `true` 时，接口流式返回原始音频字节 |
 | `stream_format` | string | 无 | `audio`：流式返回原始音频字节；`sse`：流式返回 SSE 事件。设置本参数后，即使不写 `stream`，接口也按流式返回 |
 | `model` | string | `openbmb/VoxCPM2` | 为兼容 OpenAI 客户端而保留，服务端忽略此参数 |

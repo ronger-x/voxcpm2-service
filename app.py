@@ -23,9 +23,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from voxcpm import VoxCPM
 
-from inference_accel import optimize_model
 from synthesis import generate_segments
 
 ROOT = Path(__file__).resolve().parent
@@ -39,6 +37,9 @@ DEFAULT_VOICE = 'default'
 os.environ.setdefault('HF_HOME', str(CACHE_DIR))
 
 MODEL = None
+MODEL_ID = 'openbmb/VoxCPM2'
+# nano：Nano-vLLM 推理引擎（默认，需要 Linux 与 flash-attn）；torch：上游 voxcpm 的 PyTorch 实现
+ENGINE = os.environ.get('VOXCPM_ENGINE', 'nano').strip().lower()
 API_KEYS = [k.strip() for k in os.environ.get('VOXCPM_API_KEYS', '').split(',') if k.strip()]
 # 格式 -> (ffmpeg 输出参数, Content-Type)
 AUDIO_FORMATS = {
@@ -69,20 +70,47 @@ def build_on_gpu():
     voxcpm2.load_file = lambda path, device='cpu': load_file(path, device='cuda')
 
 
+def load_torch_model():
+    from voxcpm import VoxCPM
+
+    from inference_accel import optimize_model
+
+    if os.environ.get('VOXCPM_BUILD_ON_GPU') == '1' and torch.cuda.is_available():
+        build_on_gpu()
+    model = VoxCPM.from_pretrained(MODEL_ID, load_denoiser=False, optimize=False)
+    optimize_model(
+        model.tts_model,
+        use_graph=os.environ.get('VOXCPM_CUDA_GRAPH', '1') == '1',
+        compile_features=os.environ.get('VOXCPM_COMPILE_FEATURES', '1') == '1',
+    )
+    return model
+
+
+def load_nano_engine():
+    from huggingface_hub import snapshot_download
+
+    from nano_engine import NanoEngine
+
+    return NanoEngine(
+        snapshot_download(MODEL_ID),
+        gpu_memory_utilization=float(os.environ.get('VOXCPM_GPU_MEMORY_UTILIZATION', '0.55')),
+        inference_timesteps=int(os.environ.get('VOXCPM_INFERENCE_TIMESTEPS', '10')),
+        max_num_seqs=int(os.environ.get('VOXCPM_MAX_NUM_SEQS', '4')),
+    )
+
+
+def sample_rate_of(model):
+    return model.tts_model.sample_rate if hasattr(model, 'tts_model') else model.sample_rate
+
+
 def load_model():
     global MODEL
     if MODEL is None:
-        if os.environ.get('VOXCPM_BUILD_ON_GPU') == '1' and torch.cuda.is_available():
-            build_on_gpu()
-        model = VoxCPM.from_pretrained('openbmb/VoxCPM2', load_denoiser=False, optimize=False)
-        optimize_model(
-            model.tts_model,
-            use_graph=os.environ.get('VOXCPM_CUDA_GRAPH', '1') == '1',
-            compile_features=os.environ.get('VOXCPM_COMPILE_FEATURES', '1') == '1',
-        )
-        # Complete feature compilation and the first graph capture before
-        # exposing any PCM to a player. Otherwise its first buffer can drain
-        # while the second audio patch waits for compilation.
+        if ENGINE not in ('nano', 'torch'):
+            raise RuntimeError(f'VOXCPM_ENGINE 只支持 nano 或 torch，当前为 {ENGINE}')
+        model = load_nano_engine() if ENGINE == 'nano' else load_torch_model()
+        # Complete compilation / graph capture before exposing any PCM to a player.
+        # Otherwise its first buffer can drain while the next patch waits for compilation.
         warmup = build_kwargs('你好，欢迎使用语音服务。模型预热已经完成。')
         warmup['max_len'] = 4
         with torch.inference_mode(), closing(generate_segments(model, warmup, True, threading.Event())) as chunks:
@@ -115,7 +143,7 @@ def gpu_worker():
             if cancelled.is_set():
                 continue
             model = load_model()
-            sample_rate = model.tts_model.sample_rate
+            sample_rate = sample_rate_of(model)
             complete = []
             with torch.inference_mode(), closing(generate_segments(model, kwargs, streaming, cancelled)) as chunks:
                 for wav in chunks:
@@ -332,7 +360,7 @@ class SpeechSegment(BaseModel):
 class SpeechRequest(BaseModel):
     input: str = ''  # 传了 segments 时以 segments 为准，input 可以留空
     segments: list[SpeechSegment] | None = None  # 分段文本，每段可带自己的风格
-    model: str = 'openbmb/VoxCPM2'
+    model: str = MODEL_ID
     voice: str | None = None  # 预置音色名；未知或未填时使用 default 预置音色
     instructions: str | None = None  # 音色 / 风格描述
     response_format: Literal['wav', 'pcm', 'mp3', 'opus', 'aac', 'flac'] = 'wav'
@@ -419,7 +447,7 @@ def health():
 def models(authorization: str | None = Header(None), x_api_key: str | None = Header(None)):
     check_api_key(authorization, x_api_key)
     return {'object': 'list', 'data': [
-        {'id': 'openbmb/VoxCPM2', 'object': 'model', 'created': 0, 'owned_by': 'openbmb'},
+        {'id': MODEL_ID, 'object': 'model', 'created': 0, 'owned_by': 'openbmb'},
     ]}
 
 

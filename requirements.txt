@@ -11,3 +11,5 @@ uvicorn==0.54.0
 numpy==2.3.4
 soundfile==0.14.0
 pydantic==2.14.1
+# Nano-vLLM 推理引擎（VOXCPM_ENGINE=nano）；flash-attn 由 Dockerfile 单独安装
+nano-vllm-voxcpm==2.0.5
