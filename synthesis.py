@@ -1,6 +1,7 @@
 """Sentence segmentation and a fixed voice reference for each request."""
 
 import re
+import subprocess
 import tempfile
 from contextlib import closing
 from pathlib import Path
@@ -41,16 +42,77 @@ def merge_controls(*controls):
 
 
 def plan_sentences(text, control=None, segments=None, split=True):
-    """Return [(sentence, control)]. Each segment may add its own style to the request-wide control."""
+    """Return [(sentence, control, prosody)].
+
+    Each segment may add its own style to the request-wide control and carry a prosody;
+    only the segment's first sentence keeps the leading pause. A segment `fade` (dB across the
+    whole segment) becomes a per-sentence `ramp` (start dB, end dB) split by character count,
+    so sentences still stream one by one.
+    """
     pieces = segments if segments else [{'text': text}]
     plan = []
     for piece in pieces:
         piece_control = merge_controls(control, piece.get('instructions'))
         piece_text = piece['text'].strip()
-        for sentence in (split_sentences(piece_text) if split else [piece_text]):
-            if sentence:
-                plan.append((sentence, piece_control))
+        sentences = [s for s in (split_sentences(piece_text) if split else [piece_text]) if s]
+        fade = (piece.get('prosody') or {}).get('fade', 0)
+        total = sum(len(sentence) for sentence in sentences) or 1
+        done = 0
+        for index, sentence in enumerate(sentences):
+            prosody = dict(piece.get('prosody') or {})
+            prosody.pop('fade', None)
+            if index:
+                prosody.pop('pause', None)
+            if fade:
+                prosody['ramp'] = (round(fade * done / total, 3), round(fade * (done + len(sentence)) / total, 3))
+            done += len(sentence)
+            plan.append((sentence, piece_control, prosody or None))
     return plan
+
+
+def prosody_filter(prosody):
+    """ffmpeg filter for rate (tempo factor) and pitch (semitones). None when neither changes.
+
+    Rate alone uses atempo: on the same take, rubberband at 0.85x brightened the voice (spectral
+    centroid +80-120 Hz, speaker similarity 0.97) while atempo kept it (0.985). rubberband is only
+    used when the pitch moves, with formants preserved.
+    """
+    rate = prosody.get('rate', 1.0)
+    pitch = prosody.get('pitch', 0.0)
+    if pitch:
+        return f'rubberband=tempo={rate:g}:pitch={2 ** (pitch / 12):.6f}:formant=preserved:pitchq=quality'
+    if rate != 1:
+        return f'atempo={rate:g}'
+    return None
+
+
+def needs_whole_sentence(prosody):
+    """Tempo/pitch filters and gain ramps need the whole sentence before any of it is released."""
+    return bool(prosody and (prosody_filter(prosody) or prosody.get('ramp')))
+
+
+def apply_gain(pcm, prosody):
+    """Constant `volume` plus an optional linear-in-dB `ramp` across the given audio."""
+    prosody = prosody or {}
+    gain = prosody.get('volume', 0.0)
+    start, end = prosody.get('ramp') or (0.0, 0.0)
+    if not gain and not start and not end:
+        return pcm
+    db = gain + np.linspace(start, end, len(pcm), dtype=np.float32) if (start or end) else gain
+    return np.clip(pcm * 10 ** (db / 20), -1.0, 1.0).astype(np.float32)
+
+
+def apply_prosody(pcm, sample_rate, prosody):
+    """Reshape one whole sentence: tempo, pitch and the gain ramp."""
+    af = prosody_filter(prosody)
+    if af:
+        result = subprocess.run(
+            ['ffmpeg', '-v', 'error', '-nostdin', '-f', 'f32le', '-ar', str(sample_rate), '-ac', '1',
+             '-i', 'pipe:0', '-af', af, '-f', 'f32le', 'pipe:1'],
+            input=pcm.astype('<f4').tobytes(), capture_output=True, check=True,
+        )
+        pcm = np.frombuffer(result.stdout, '<f4').copy()
+    return apply_gain(pcm, prosody)
 
 
 def build_reference_cache(tts, reference, prompt_text=None):
@@ -80,13 +142,17 @@ def generate_segments(model, kwargs, streaming, cancelled):
     if cancelled.is_set():
         return
     prompt_cache = build_reference_cache(tts, reference, reference_text) if reference else None
-    for index, (sentence, control) in enumerate(plan):
+    for index, (sentence, control, prosody) in enumerate(plan):
         if cancelled.is_set():
             return
         sentence = re.sub(r'\s+', ' ', sentence)
         prompt = f'({control}){sentence}' if control else sentence
         first_chunks = []
+        held = [] if needs_whole_sentence(prosody) else None
         needs_anchor = index == 0 and prompt_cache is None and len(plan) > 1
+        pause = (prosody or {}).get('pause', 0)
+        if pause:
+            yield np.zeros(int(pause * tts.sample_rate), dtype=np.float32)
         with closing(tts._generate_with_prompt_cache(
             target_text=prompt,
             prompt_cache=prompt_cache,
@@ -100,7 +166,12 @@ def generate_segments(model, kwargs, streaming, cancelled):
                 pcm = wav.squeeze(0).cpu().numpy().copy()
                 if needs_anchor:
                     first_chunks.append(pcm)
-                yield pcm
+                if held is None:
+                    yield apply_gain(pcm, prosody)
+                else:
+                    held.append(pcm)
+        if held and not cancelled.is_set():
+            yield apply_prosody(np.concatenate(held), tts.sample_rate, prosody)
         if needs_anchor and not cancelled.is_set():
             # Keep this reference fixed; using the previous sentence accumulates
             # voice drift. The uploaded reference, when present, takes priority.
